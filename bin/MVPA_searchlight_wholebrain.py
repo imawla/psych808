@@ -1,5 +1,12 @@
 #!/usr/bin/python
 
+#### This script runs Searchlight MVPA analysis using Nilearn package
+
+# This script is optimized for use with ds008 file structure
+# If directory structures change, please go to sections in the
+# 	script below that say "note: this is optimized for ds008 file structure"
+# 	and edit those portions of the code
+
 # Define function to obtain date and time
 def print_now(pre_text=''):
         from datetime import datetime as dt
@@ -47,38 +54,88 @@ data_dir = pathjoin(project_dir, dataset)
 #	whole-brain (wb) mask in this case
 mask_file = nib.load('/usr/share/fsl/5.0/data/standard/MNI152_T1_2mm_brain_mask.nii.gz')
 
-subject_list = glob(pathjoin(data_dir,'sub???','model','task001.gfeat',cond[labelgrp1]+'.feat','stats','cope1.nii.gz')) + \
-	glob(pathjoin(data_dir,'sub???','model','task001.gfeat',cond[labelgrp2]+'.feat','stats','cope1.nii.gz'))
+# "grp1dir" and "grp2dir" specifies the wildcard expression to 
+#        grab the second level COPE files for all subjects
+# note: this is optimized for ds008 file structure 
+grp1dir=pathjoin(data_dir,'sub???','model','task001.gfeat',cond[labelgrp1]+'.feat','stats','cope1.nii.gz')
+grp2dir=pathjoin(data_dir,'sub???','model','task001.gfeat',cond[labelgrp2]+'.feat','stats','cope1.nii.gz')
+# subject_list uses glob to get a list of all the present files
+#	and concatenates both grp1dir and grp2dir lists
+# note: you need to have all the second level COPE files to have run
+# Print message before grabbing files
+print("\nGrabbing list of image files..." )
+subject_list=glob(grp1dir)+glob(grp2dir)
+# .sort() sorts all the files to make sure they are in proper order
 subject_list.sort()
-subjects = (nib.Nifti1Image.from_image(nib.load(subject)) for subject in subject_list)
-subjects_concat = nib.concat_images(subjects, check_affines=False)
 
+# nib.concat uses nibabel to concatenate images
+# Single image can be loaded using nib.load(subject_list[0])
+print("\nConcatenating images into a 4D file..." )
+subjects_concat = nib.concat_images(subject_list, check_affines=False)
+
+# fmri_label is an empty array to store labels of 
+#	fmri runs, COPE files in this case (e.g., stop, go)
+# subj_label is an empty array to store subject ids
+# note: fmri_label and subj_label should have the same dimensions
+#	let's say fmri_label is ['stop', 'go']
+#	subj_label should be ['sub001', 'sub001']
+#	in other words, each item in fmri_label should have a
+#	subject identifier
 fmri_label=[]
+subj_label=[]
+# cond_inv reverses the dictionary 
+# lets say a dictionary is {'A':'B'}, it will be
+# reversed to {'B':'A'}
 cond_inv = {v: k for k, v in cond.iteritems()}
 
+# the following for loop will go through each item in the subject_list
+# and create an array of identifiers and store into arrays: fmri_label and subj_label
+# subject.split will look at the name of the file and split the name of the file
+#	to obtain subject identifiers (subj_label) and condition identifiers (fmri_label)
+# note: this is optimized for ds008 file structure
+print("\nObtaining labels for subjects and labels for conditions..." )
 for subject in subject_list:
 	copenum = subject.split('/')[8].split('.')[0]
-	#cope_load=nib.load(subject)
 	fmri_label=np.append(fmri_label, cond_inv[copenum])
-	#cope_masked = wb_mask.fit_transform(subject)
-	#fmri_features = np.r_['-1', fmri_features, cope_masked]
+	subjectnum = subject.split('/')[5]
+	subj_label = np.append(subj_label, subjectnum)
 
 # Define the cross-validation scheme used for validation.
 # Here we use a KFold cross-validation on the session, which corresponds to
 # splitting the samples in 4 folds and make 4 runs using each fold as a test
 # set once and the others as learning sets
-from sklearn.cross_validation import KFold
-cv = KFold(fmri_label.size, n_folds=4)
+from sklearn.cross_validation import StratifiedKFold
+folds=4
+print("\nDefining cross-validation scheme using {} Folds..." ).format(folds)
+skf = StratifiedKFold(fmri_label, n_folds=folds)
+# To look at the Stratified K-Folds scheme, use the following
+# >>> for train_index, test_index in kf:
+# >>>    print("TRAIN:", list(train_index), "TEST:", list(test_index))
+# or you can use the following to get exact subject ids
+# >>> for train_index, test_index in kf:
+# >>>    print("TRAIN:", list(subj_label[train_index]), "TEST:", list(subj_label[test_index]))
 
+# nilearn.decoding has the SearchLight function for SearchLight analysis
+# mask_file, radius, and cross-validation schemes are main things to be specified
+# next, .fit has to be run in the format of (features, labels)
 import nilearn.decoding
+rad=5.6
+print("\nRunning searchlight across the brain with radius {}..." ).format(rad)
 # The radius is the one of the Searchlight sphere that will scan the volume
 searchlight = nilearn.decoding.SearchLight(
     mask_file,
-    radius=5.6, n_jobs=1,
-    verbose=1, cv=cv)
+    radius=rad, n_jobs=1,
+    verbose=1, cv=skf)
 searchlight.fit(subjects_concat, fmri_label)
 
+# Now save the image into a nifti-format using new_img_like
+# new_img_like uses the mask_file as reference to specify the type of image
+# 	and the matrix of searchlight.scores plot the searchlight values 
+print("\nSearchlight complete, saving image..." ).format(rad)
 #saving the image files for visualization
 from nilearn.image import new_img_like
 searchlight_img=new_img_like(mask_file, searchlight.scores_)
 nib.save(searchlight_img, pathjoin(project_dir, dataset, 'MVPA_searchlight.nii.gz'))
+
+# end of script print message
+print_now('\nEnd processing searchlight MVPA at ')
